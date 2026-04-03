@@ -2,31 +2,27 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from datetime import datetime, date, timedelta
 import pytz
 
 # 1. 페이지 설정
-st.set_page_config(page_title="Seasons Basic (Andy)", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Seasons Basic (Andy)", page_icon="🌿", layout="wide")
 KST = pytz.timezone('Asia/Seoul')
 
 # --- 데이터 엔진 ---
 @st.cache_data(ttl=3600)
 def get_data(ticker, start_date):
     try:
-        # 120일선 계산을 위해 6개월 전부터 데이터 가져오기
         fetch_start = pd.to_datetime(start_date) - pd.DateOffset(months=8)
         data = yf.download(ticker, start=fetch_start, progress=False)
         if data.empty: return None
         
         df = pd.DataFrame(index=data.index)
-        # yfinance 멀티인덱스 대응
         if isinstance(data.columns, pd.MultiIndex):
             df['close'] = data['Close'][ticker].ffill()
         else:
             df['close'] = data['Close'].ffill()
             
-        # Andy 로직 핵심 지표 계산
         df['ma120'] = df['close'].rolling(window=120).mean()
         df['p1'] = df['close'].shift(1)
         df['p2'] = df['close'].shift(2)
@@ -37,25 +33,25 @@ def get_data(ticker, start_date):
         st.error(f"데이터 오류: {e}")
         return None
 
-# --- 시뮬레이션 엔진 (Andy 로직 적용) ---
-def run_simulation(df, initial_seed, start_limit_date):
+# --- 시뮬레이션 엔진 ---
+def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
     sim_df = df[df.index.date >= start_limit_date].copy()
+    if end_limit_date:
+        sim_df = sim_df[sim_df.index.date <= end_limit_date]
+        
     if sim_df.empty: return pd.DataFrame(), []
 
-    # 설정값
-    boxx_rate = (1 + 0.05) ** (1/252) - 1 # 연 5% 이자
-    cash_a = initial_seed * 0.5  # 안전자산(BOXX)
-    cash_b = initial_seed * 0.5  # 매매자금(SOXL)
+    boxx_rate = (1 + 0.05) ** (1/252) - 1 
+    cash_a = initial_seed * 0.5  
+    cash_b = initial_seed * 0.5  
     
     shares, buy_count, avg_price = 0, 0, 0.0
     history = []
-    trades = []
     
     last_year = sim_df.index[0].year
     pending_rebalance = False
 
     for date, row in sim_df.iterrows():
-        # 연도 변경 체크
         if date.year != last_year:
             pending_rebalance = True
             last_year = date.year
@@ -64,29 +60,24 @@ def run_simulation(df, initial_seed, start_limit_date):
         ma120 = float(row['ma120'])
         x = float(row['x'])
         
-        b_l = round(x * 0.99, 2) # -1% LOC 매수타점
-        s_l = round(x * 1.01, 2) # +1% LOC 매도타점
+        b_l = round(x * 0.99, 2) 
+        s_l = round(x * 1.01, 2) 
         
-        # 가중치 결정
+        # 계절(모드) 판단: Ivy(상승), Lily(하락)
         weights = [2, 1, 2] if curr_c >= ma120 else [1, 2, 3]
         
-        # 1. 매도 로직
         if shares > 0 and curr_c >= s_l:
             cash_b += shares * curr_c
             shares, buy_count, avg_price = 0, 0, 0.0
-            
-            # 연간 리밸런싱 실행
             if pending_rebalance:
                 total = cash_a + cash_b
                 cash_a, cash_b = total * 0.5, total * 0.5
                 pending_rebalance = False
         
-        # 2. 매수 로직 (3분할)
         elif buy_count < 3 and curr_c <= b_l:
             rem_w = sum(weights[buy_count:])
             curr_w = weights[buy_count]
             buy_money = cash_b * (curr_w / rem_w)
-            
             buy_qty = buy_money // b_l
             if buy_qty > 0:
                 cost = buy_qty * curr_c
@@ -94,94 +85,106 @@ def run_simulation(df, initial_seed, start_limit_date):
                 shares += buy_qty
                 cash_b -= cost
                 buy_count += 1
-                trades.append({"날짜": date.date(), "회차": buy_count, "가격": curr_c, "수량": buy_qty})
 
-        # 안전자산 이자 수익
         cash_a *= (1 + boxx_rate)
         total_assets = cash_a + cash_b + (shares * curr_c)
         history.append({'Date': date, 'Total': total_assets, 'Cash_A': cash_a, 'Cash_B': cash_b, 'Shares': shares, 'Avg': avg_price})
 
-    return pd.DataFrame(history).set_index('Date'), trades
+    return pd.DataFrame(history).set_index('Date')
 
-# --- UI 설정 ---
-st.title("🌿 Seasons Basic : Andy Strategy")
-st.markdown("58년 개띠 형님을 위한 **안전하고 명확한** SOXL 투자 계산기")
-
+# --- UI 레이아웃 ---
 with st.sidebar:
-    st.header("⚙️ 설정")
-    ticker = st.text_input("종목 코드", value="SOXL")
-    seed = st.number_input("초기 자본 ($)", value=10000)
-    op_start = st.date_input("운용 시작일", value=date(2024, 1, 1))
+    st.header("⚙️ 전략 설정")
+    ticker = st.text_input("대상 종목", value="SOXL")
+    init_seed = st.number_input("투자 원금 ($)", value=10000)
     st.divider()
-    st.write("안전 자산(BOXX) 비중: **50%**")
-    st.write("리밸런싱 주기: **1년 (익절 시)**")
+    st.info("💡 **Andy 원칙**\n1. 현금 5:5 고정\n2. 120일선 가변분할\n3. 연간 조건부 리밸런싱")
 
-# 데이터 로드 및 실행
-df = get_data(ticker, op_start)
+tab1, tab2 = st.tabs(["🎯 실시간 현황 & 가이드", "📊 과거 백테스트 상세"])
 
-if df is not None:
-    res, trades = run_simulation(df, seed, op_start)
+# 데이터 로드
+raw_df = get_data(ticker, date(2013, 1, 1)) # 충분한 과거 데이터 로드
+
+with tab1:
+    op_start = st.date_input("운용 시작일 (수익률 계산 기준)", value=date(2024, 1, 1))
+    if raw_df is not None:
+        res_live = run_simulation(raw_df, init_seed, op_start)
+        if not res_live.empty:
+            cur = res_live.iloc[-1]
+            latest = raw_df.iloc[-1]
+            
+            # 현황 위젯
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("현재 총 자산", f"${cur['Total']:,.2f}")
+            m2.metric("누적 수익률", f"{(cur['Total']/init_seed-1)*100:+.2f}%")
+            m3.metric("채워진 슬롯", f"{int(cur['Shares'] > 0) * (res_live['Shares'].diff().ne(0).cumsum().iloc[-1] % 4)} / 3") # 간략화된 슬롯 표시
+            m4.metric("안전 자산(BOXX)", f"${cur['Cash_A']:,.2f}")
+
+            st.divider()
+            
+            # 계절(모드) 가이드
+            x_val = latest['x']
+            is_ivy = latest['close'] >= latest['ma120']
+            mode_name = "🌿 Ivy (아이비)" if is_ivy else "🌸 Lily (릴리)"
+            mode_color = "green" if is_ivy else "blue"
+            
+            st.subheader(f"오늘의 계절: :{mode_color}[{mode_name}]")
+            st.caption(f"120일선(${latest['ma120']:.2f}) 기준 {'상승' if is_ivy else '하락'} 추세입니다.")
+            
+            g1, g2 = st.columns(2)
+            with g1:
+                st.error("📥 매수 가이드 (LOC)")
+                b_p = round(x_val * 0.99, 2)
+                if cur['Shares'] == 0:
+                    w = [2, 1, 2] if is_ivy else [1, 2, 3]
+                    qty = (cur['Cash_B'] * (w[0]/sum(w))) // b_p
+                    st.write(f"**타점:** `${b_p}` 이하 | **수량:** `{int(qty)} 주` (1차)")
+                else: st.write("추가 매수 조건 확인 필요")
+                
+            with g2:
+                st.info("📤 매도 가이드 (LOC)")
+                s_p = round(x_val * 1.01, 2)
+                if cur['Shares'] > 0:
+                    st.write(f"**타점:** `${s_p}` 이상 | **수량:** `{int(cur['Shares'])} 주` (전량)")
+                else: st.write("보유 물량 없음")
+
+            st.line_chart(res_live['Total'])
+
+with tab2:
+    st.header("📊 전략 성적표 (Backtest)")
+    col1, col2 = st.columns(2)
+    bt_start = col1.date_input("테스트 시작", value=date(2013, 1, 1))
+    bt_end = col2.date_input("테스트 종료", value=date.today())
     
-    if not res.empty:
-        cur = res.iloc[-1]
-        latest_data = df.iloc[-1]
-        
-        # 1. 상단 현황판
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("총 자산", f"${cur['Total']:,.2f}")
-        c2.metric("수익률", f"{(cur['Total']/seed-1)*100:+.2f}%")
-        c3.metric("안전 자산(BOXX)", f"${cur['Cash_A']:,.2f}")
-        c4.metric("매수 대기금", f"${cur['Cash_B']:,.2f}")
-
-        # 2. 오늘의 가이드 (가장 중요!)
-        st.divider()
-        st.subheader("🎯 오늘의 실전 매매 가이드")
-        
-        # 기준가 x 계산
-        x_val = latest_data['x']
-        ma120_val = latest_data['ma120']
-        curr_price = latest_data['close']
-        
-        mode = "📈 상승장 모드 (2:1:2)" if curr_price >= ma120_val else "📉 하락장 모드 (1:2:3)"
-        st.info(f"현재 시장 상태: **{mode}** (120일선: ${ma120_val:.2f})")
-        
-        g1, g2 = st.columns(2)
-        with g1:
-            st.error("📥 매수 주문 (LOC)")
-            buy_target = round(x_val * 0.99, 2)
-            if cur['Shares'] == 0:
-                # 1회차 수량 계산
-                weights = [2, 1, 2] if curr_price >= ma120_val else [1, 2, 3]
-                first_buy_cash = cur['Cash_B'] * (weights[0] / sum(weights))
-                qty = first_buy_cash // buy_target
-                st.write(f"**타점:** `${buy_target}` 이하")
-                st.write(f"**수량:** `{int(qty)} 주` (1회차)")
-            else:
-                st.write("보유 중입니다. 다음 분할 매수 조건 확인이 필요합니다.")
-        
-        with g2:
-            st.info("📤 매도 주문 (LOC)")
-            sell_target = round(x_val * 1.01, 2)
-            if cur['Shares'] > 0:
-                st.write(f"**타점:** `${sell_target}` 이상")
-                st.write(f"**수량:** `{int(cur['Shares'])} 주` (전량 매도)")
-            else:
-                st.write("팔 주식이 없습니다.")
-
-        # 3. 수익 곡선 그래프
-        st.divider()
-        st.subheader("📊 자산 성장 그래프")
-        st.line_chart(res['Total'])
-
-        # 4. 백테스트 상세 결과
-        with st.expander("📅 연도별 성적 보기"):
-            res['Year'] = res.index.year
+    if st.button("🚀 백테스트 실행"):
+        res_bt = run_simulation(raw_df, init_seed, bt_start, bt_end)
+        if not res_bt.empty:
+            # 주요 지표 계산
+            f_val = res_bt['Total'].iloc[-1]
+            days = (res_bt.index[-1] - res_bt.index[0]).days
+            cagr = ((f_val / init_seed) ** (365.25 / days) - 1) * 100
+            
+            peak = res_bt['Total'].cummax()
+            mdd_series = (res_bt['Total'] - peak) / peak
+            mdd = mdd_series.min() * 100
+            calmar = cagr / abs(mdd) if mdd != 0 else 0
+            
+            # 지표 출력
+            i1, i2, i3, i4 = st.columns(4)
+            i1.metric("최종 자산", f"${f_val:,.0f}")
+            i2.metric("CAGR (연복리)", f"{cagr:.2f}%")
+            i3.metric("최대 낙폭 (MDD)", f"{mdd:.2f}%")
+            i4.metric("Calmar 지수", f"{calmar:.2f}")
+            
+            st.line_chart(res_bt['Total'])
+            
+            # 연도별 통계
+            res_bt['Year'] = res_bt.index.year
             y_stats = []
-            for yr, group in res.groupby('Year'):
-                ret = (group['Total'].iloc[-1] / group['Total'].iloc[0] - 1) * 100
-                mdd = ((group['Total'] - group['Total'].cummax()) / group['Total'].cummax()).min() * 100
-                y_stats.append({"연도": yr, "수익률": f"{ret:+.2f}%", "MDD": f"{mdd:.2f}%"})
+            for yr, group in res_bt.groupby('Year'):
+                y_ret = (group['Total'].iloc[-1] / group['Total'].iloc[0] - 1) * 100
+                y_mdd = ((group['Total'] - group['Total'].cummax()) / group['Total'].cummax()).min() * 100
+                y_stats.append({"연도": yr, "수익률": f"{y_ret:+.2f}%", "MDD": f"{y_mdd:.2f}%"})
+            
+            st.subheader("📅 연도별 상세 성적")
             st.table(pd.DataFrame(y_stats))
-
-else:
-    st.warning("데이터를 불러올 수 없습니다. 종목 코드나 날짜를 확인해 주세요.")
