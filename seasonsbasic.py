@@ -13,7 +13,7 @@ KST = pytz.timezone('Asia/Seoul')
 @st.cache_data(ttl=3600)
 def get_data(ticker, start_date):
     try:
-        # 핵심 수정: 사용자가 선택한 날짜가 언제든, 120일선을 계산할 수 있게 8개월 전부터 데이터를 가져옴
+        # 사용자가 선택한 날짜보다 10개월 앞선 데이터를 가져와서 이동평균선 지표를 완벽히 계산
         fetch_start = pd.to_datetime(start_date) - pd.DateOffset(months=10)
         data = yf.download(ticker, start=fetch_start, progress=False)
         if data.empty: return None
@@ -24,13 +24,12 @@ def get_data(ticker, start_date):
         else:
             df['close'] = data['Close'].ffill()
             
-        # 120일 이동평균선 및 기준가 x 계산
+        # Andy 전략 핵심 지표 계산
         df['ma120'] = df['close'].rolling(window=120).mean()
         df['p1'] = df['close'].shift(1)
         df['p2'] = df['close'].shift(2)
         df['x'] = ((df['p1'] + df['p2']) / 2).round(2)
         
-        # 계산이 완료된 시점 이후 데이터만 남김
         return df.dropna()
     except Exception as e:
         st.error(f"⚠️ 데이터 엔진 오류: {e}")
@@ -38,7 +37,6 @@ def get_data(ticker, start_date):
 
 # --- 시뮬레이션 엔진 ---
 def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
-    # 사용자가 선택한 시작일 이후 데이터만 필터링
     sim_df = df[df.index.date >= start_limit_date].copy()
     if end_limit_date:
         sim_df = sim_df[sim_df.index.date <= end_limit_date]
@@ -46,8 +44,8 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
     if sim_df.empty: return pd.DataFrame()
 
     boxx_rate = (1 + 0.05) ** (1/252) - 1 
-    cash_a = initial_seed * 0.5  # 안전자산
-    cash_b = initial_seed * 0.5  # 매매자금
+    cash_a = initial_seed * 0.5 
+    cash_b = initial_seed * 0.5 
     
     shares, buy_count, avg_price = 0, 0, 0.0
     history = []
@@ -112,8 +110,7 @@ with st.sidebar:
 tab1, tab2 = st.tabs(["🎯 오늘의 가이드", "📊 백테스트 리포트"])
 
 with tab1:
-    op_start = st.date_input("수익률 계산 시작일", value=date(2025, 1, 1)) # 2025년도 선택 가능
-    # 실시간 탭 데이터 로드
+    op_start = st.date_input("수익률 계산 시작일", value=date(2025, 1, 1))
     raw_df_live = get_data(ticker, op_start)
     
     if raw_df_live is not None:
@@ -163,13 +160,15 @@ with tab1:
 with tab2:
     st.header("📊 백테스트 리포트 (Backtest)")
     bt1, bt2 = st.columns(2)
-    # 시작 날짜를 2013년부터 2026년까지 형님이 마음껏 바꿀 수 있습니다.
+    # 시작 날짜를 형님이 마음껏 바꿀 수 있습니다.
     bt_start = bt1.date_input("분석 시작일 선택", value=date(2013, 1, 1))
     bt_end = bt2.date_input("분석 종료일 선택", value=date.today())
     
     if st.button("🚀 상세 분석 시작"):
-        # 백테스트용 데이터 별도 로드 (선택한 날짜에 맞춰서)
+        # 핵심 변경: 버튼을 누를 때마다 형님이 선택한 bt_start 날짜를 기반으로 데이터를 새로 가져옵니다.
+        # 덕분에 2025년부터 하고 싶으시면 그에 맞는 데이터가 즉시 호출됩니다.
         raw_df_bt = get_data(ticker, bt_start)
+        
         if raw_df_bt is not None:
             res_bt = run_simulation(raw_df_bt, init_seed, bt_start, bt_end)
             if not res_bt.empty:
