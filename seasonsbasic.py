@@ -13,7 +13,6 @@ KST = pytz.timezone('Asia/Seoul')
 @st.cache_data(ttl=3600)
 def get_data(ticker, start_date):
     try:
-        # 사용자가 선택한 날짜보다 10개월 앞선 데이터를 가져와서 이동평균선 지표를 완벽히 계산
         fetch_start = pd.to_datetime(start_date) - pd.DateOffset(months=10)
         data = yf.download(ticker, start=fetch_start, progress=False)
         if data.empty: return None
@@ -24,7 +23,6 @@ def get_data(ticker, start_date):
         else:
             df['close'] = data['Close'].ffill()
             
-        # Andy 전략 핵심 지표 계산
         df['ma120'] = df['close'].rolling(window=120).mean()
         df['p1'] = df['close'].shift(1)
         df['p2'] = df['close'].shift(2)
@@ -160,15 +158,16 @@ with tab1:
 with tab2:
     st.header("📊 백테스트 리포트 (Backtest)")
     bt1, bt2 = st.columns(2)
-    # 시작 날짜를 형님이 마음껏 바꿀 수 있습니다.
-    bt_start = bt1.date_input("분석 시작일 선택", value=date(2013, 1, 1))
-    bt_end = bt2.date_input("분석 종료일 선택", value=date.today())
+    
+    # 핵심 수정: min_value와 max_value를 설정하여 2013년부터 2026년 이후까지 선택 가능하게 함
+    min_date = date(2013, 1, 1)
+    max_date = date(2030, 12, 31) # 넉넉하게 2030년까지 열어두었습니다.
+    
+    bt_start = bt1.date_input("분석 시작일 선택", value=date(2013, 1, 1), min_value=min_date, max_value=max_date)
+    bt_end = bt2.date_input("분석 종료일 선택", value=date.today(), min_value=min_date, max_value=max_date)
     
     if st.button("🚀 상세 분석 시작"):
-        # 핵심 변경: 버튼을 누를 때마다 형님이 선택한 bt_start 날짜를 기반으로 데이터를 새로 가져옵니다.
-        # 덕분에 2025년부터 하고 싶으시면 그에 맞는 데이터가 즉시 호출됩니다.
         raw_df_bt = get_data(ticker, bt_start)
-        
         if raw_df_bt is not None:
             res_bt = run_simulation(raw_df_bt, init_seed, bt_start, bt_end)
             if not res_bt.empty:
