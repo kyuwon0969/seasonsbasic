@@ -13,7 +13,7 @@ KST = pytz.timezone('Asia/Seoul')
 @st.cache_data(ttl=3600)
 def get_data(ticker, start_date):
     try:
-        # 120일선 계산을 위해 8개월 전부터 데이터 로드
+        # 120일선 계산을 위해 지정된 시작일보다 8개월 앞선 시점부터 데이터 로드
         fetch_start = pd.to_datetime(start_date) - pd.DateOffset(months=8)
         data = yf.download(ticker, start=fetch_start, progress=False)
         if data.empty: return None
@@ -111,7 +111,7 @@ with st.sidebar:
 
 tab1, tab2 = st.tabs(["🎯 오늘의 가이드", "📊 백테스트 리포트"])
 
-# 데이터 로드
+# 데이터 로드 (시작 기간을 2012년으로 넉넉히 잡아 2013년부터 바로 계산 가능하게 함)
 raw_df = get_data(ticker, date(2013, 1, 1))
 
 with tab1:
@@ -149,7 +149,9 @@ with tab1:
                     qty = (cur['Cash_B'] * (w[0]/sum(w))) // b_p
                     st.write(f"**가격:** `${b_p}` 이하 | **수량:** `{int(qty)} 주` (1차)")
                 else: 
-                    st.write(f"**현재 {int(res_live['Shares'].diff().ne(0).cumsum().iloc[-1] % 4)}차 매수 완료.**")
+                    # 슬롯 체크 로직
+                    current_slots = int(res_live['Shares'].diff().ne(0).cumsum().iloc[-1] % 4)
+                    st.write(f"**현재 {current_slots}차 매수 완료.**")
                     st.write("익절 전까지 추가 매수 조건 대기 중입니다.")
                 
             with g2:
@@ -165,10 +167,12 @@ with tab1:
 with tab2:
     st.header("📊 백테스트 리포트 (Backtest)")
     bt1, bt2 = st.columns(2)
+    # 시작 날짜를 2013년 1월 1일로 기본 설정
     bt_start = bt1.date_input("분석 시작일", value=date(2013, 1, 1))
     bt_end = bt2.date_input("분석 종료일", value=date.today())
     
     if st.button("🚀 상세 분석 시작"):
+        # 백테스트 실행 시에도 충분한 과거 데이터가 확보된 raw_df를 사용
         res_bt = run_simulation(raw_df, init_seed, bt_start, bt_end)
         if not res_bt.empty:
             f_val = res_bt['Total'].iloc[-1]
