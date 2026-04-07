@@ -13,7 +13,6 @@ KST = pytz.timezone('Asia/Seoul')
 @st.cache_data(ttl=3600)
 def get_data(ticker, start_date):
     try:
-        # 데이터가 아직 안 올라온 오늘 대신, 넉넉하게 미래까지 땡겨오도록 설정
         fetch_start = pd.to_datetime(start_date) - pd.DateOffset(months=10)
         fetch_end = date.today() + timedelta(days=1)
         data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False)
@@ -36,9 +35,8 @@ def get_data(ticker, start_date):
         st.error(f"⚠️ 데이터 엔진 오류: {e}")
         return None
 
-# --- 시뮬레이션 엔진 (그대로 유지) ---
+# --- 시뮬레이션 엔진 ---
 def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
-    # 만약 데이터의 마지막 날보다 시작일이 늦으면, 마지막 날을 시작일로 간주 (오늘 오류 방지)
     last_available_date = df.index[-1].date()
     actual_start_date = min(start_limit_date, last_available_date)
     
@@ -118,12 +116,19 @@ with tab1:
     op_start = st.date_input("운용 시작일 (주문 가이드 기준)", value=date.today())
     raw_df_live = get_data(ticker, op_start)
     
-    # BOXX 가격 데이터
+    # BOXX 가격 데이터 호출
     boxx_data = yf.download("BOXX", period="5d", progress=False)
-    boxx_price = boxx_data['Close'].iloc[-1] if not boxx_data.empty else 100.0
+    
+    # [핵심 수정] BOXX 가격을 스칼라(단일 숫자)로 추출하여 TypeError 방지
+    if not boxx_data.empty:
+        if isinstance(boxx_data.columns, pd.MultiIndex):
+            boxx_price = boxx_data['Close']['BOXX'].iloc[-1]
+        else:
+            boxx_price = boxx_data['Close'].iloc[-1]
+    else:
+        boxx_price = 100.0 # 데이터 부재 시 기본값
 
     if raw_df_live is not None:
-        # 오늘 날짜 선택 시 데이터가 없어도 백지가 되지 않게 내부적으로 날짜 조정
         res_live = run_simulation(raw_df_live, init_seed, op_start)
         
         if not res_live.empty:
@@ -139,17 +144,19 @@ with tab1:
             st.divider()
             
             # --- 시작 시 BOXX 주문표 ---
-            if op_start >= date.today() - timedelta(days=3): # 최근 3일 내 시작 시 가이드 노출
+            if op_start >= date.today() - timedelta(days=3):
                 st.subheader("🛡️ 시작 시 안전자산(BOXX) 매수 가이드")
                 b1, b2 = st.columns([1, 2])
                 with b1:
-                    boxx_qty = (init_seed * 0.5) // float(boxx_price)
+                    # float() 변환을 명확히 하여 연산 오류 방지
+                    b_p_val = float(boxx_price)
+                    boxx_qty = (init_seed * 0.5) // b_p_val
                     st.warning(f"**BOXX 매수 수량: `{int(boxx_qty)} 주`**")
-                    st.write(f"(최근 종가기준: `${float(boxx_price):.2f}`)")
+                    st.write(f"(최근 종가기준: `${b_p_val:.2f}`)")
                 with b2:
                     st.info("""> **꼭 읽어주세요!**
 > 1. 시작할 때 시드의 절반으로 **BOXX를 매수**합니다. 
-> 2. BOXX는 LOC가 아닌 **'지금 당장 살 수 있는 가격(시장가)'**으로 사시면 됩니다. 
+> 2. BOXX는 LOC가 아닌 **'지금 당장 살 수 있는 가격(시장가/지정가)'**으로 사시면 됩니다. 
 > 3. BOXX는 변동성이 매우 적으므로 아무 때나 사셔도 거의 타격이 없습니다. 
 > 4. BOXX는 1년에 한 번씩, 그 해 처음으로 보유 중인 SOXL이 없는 날에만 리밸런싱을 위해 매매합니다.""")
                 st.divider()
@@ -171,7 +178,6 @@ with tab1:
                     qty = (cur['Cash_B'] * (w[0]/sum(w))) // b_p
                     st.write(f"**가격:** `${b_p}` 이하 | **수량:** `{int(qty)} 주` (1차)")
                 else: 
-                    # 슬롯 체크를 위해 누적 매수 횟수 계산
                     buy_history = res_live['Shares'].diff()
                     current_slots = int(len(buy_history[buy_history > 0]) % 4)
                     st.write(f"**현재 {current_slots if current_slots > 0 else 3}차 매수 완료.**")
