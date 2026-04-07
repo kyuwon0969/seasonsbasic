@@ -13,8 +13,11 @@ KST = pytz.timezone('Asia/Seoul')
 @st.cache_data(ttl=3600)
 def get_data(ticker, start_date):
     try:
+        # 데이터가 아직 안 올라온 오늘 대신, 넉넉하게 미래까지 땡겨오도록 설정
         fetch_start = pd.to_datetime(start_date) - pd.DateOffset(months=10)
-        data = yf.download(ticker, start=fetch_start, progress=False)
+        fetch_end = date.today() + timedelta(days=1)
+        data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False)
+        
         if data.empty: return None
         
         df = pd.DataFrame(index=data.index)
@@ -33,9 +36,13 @@ def get_data(ticker, start_date):
         st.error(f"⚠️ 데이터 엔진 오류: {e}")
         return None
 
-# --- 시뮬레이션 엔진 ---
+# --- 시뮬레이션 엔진 (그대로 유지) ---
 def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
-    sim_df = df[df.index.date >= start_limit_date].copy()
+    # 만약 데이터의 마지막 날보다 시작일이 늦으면, 마지막 날을 시작일로 간주 (오늘 오류 방지)
+    last_available_date = df.index[-1].date()
+    actual_start_date = min(start_limit_date, last_available_date)
+    
+    sim_df = df[df.index.date >= actual_start_date].copy()
     if end_limit_date:
         sim_df = sim_df[sim_df.index.date <= end_limit_date]
         
@@ -51,10 +58,10 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
     last_year = sim_df.index[0].year
     pending_rebalance = False
 
-    for date, row in sim_df.iterrows():
-        if date.year != last_year:
+    for date_idx, row in sim_df.iterrows():
+        if date_idx.year != last_year:
             pending_rebalance = True
-            last_year = date.year
+            last_year = date_idx.year
 
         curr_c = float(row['close'])
         ma120 = float(row['ma120'])
@@ -63,7 +70,6 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
         b_l = round(x * 0.99, 2) 
         s_l = round(x * 1.01, 2) 
         
-        # [검증 완료] 가변 가중치 로직
         weights = [2, 1, 2] if curr_c >= ma120 else [1, 2, 3]
         
         if shares > 0 and curr_c >= s_l:
@@ -75,7 +81,6 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
                 pending_rebalance = False
         
         elif buy_count < 3 and curr_c <= b_l:
-            # [검증 완료] 정량 분할 매수 로직
             rem_w = sum(weights[buy_count:])
             curr_w = weights[buy_count]
             buy_money = cash_b * (curr_w / rem_w)
@@ -89,7 +94,7 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
 
         cash_a *= (1 + boxx_rate)
         total_assets = cash_a + cash_b + (shares * curr_c)
-        history.append({'Date': date, 'Total': total_assets, 'Cash_A': cash_a, 'Cash_B': cash_b, 'Shares': shares, 'Avg': avg_price})
+        history.append({'Date': date_idx, 'Total': total_assets, 'Cash_A': cash_a, 'Cash_B': cash_b, 'Shares': shares, 'Avg': avg_price})
 
     return pd.DataFrame(history).set_index('Date')
 
@@ -110,15 +115,17 @@ with st.sidebar:
 tab1, tab2 = st.tabs(["🎯 오늘의 가이드", "📊 백테스트 리포트"])
 
 with tab1:
-    op_start = st.date_input("수익률 계산 시작일", value=date.today())
+    op_start = st.date_input("운용 시작일 (주문 가이드 기준)", value=date.today())
     raw_df_live = get_data(ticker, op_start)
     
-    # BOXX 가격 데이터 가져오기
-    boxx_data = yf.download("BOXX", period="2d", progress=False)
+    # BOXX 가격 데이터
+    boxx_data = yf.download("BOXX", period="5d", progress=False)
     boxx_price = boxx_data['Close'].iloc[-1] if not boxx_data.empty else 100.0
 
     if raw_df_live is not None:
+        # 오늘 날짜 선택 시 데이터가 없어도 백지가 되지 않게 내부적으로 날짜 조정
         res_live = run_simulation(raw_df_live, init_seed, op_start)
+        
         if not res_live.empty:
             cur = res_live.iloc[-1]
             latest = raw_df_live.iloc[-1]
@@ -131,18 +138,18 @@ with tab1:
 
             st.divider()
             
-            # --- 시작 시 BOXX 주문표 (강조) ---
-            if op_start == date.today():
+            # --- 시작 시 BOXX 주문표 ---
+            if op_start >= date.today() - timedelta(days=3): # 최근 3일 내 시작 시 가이드 노출
                 st.subheader("🛡️ 시작 시 안전자산(BOXX) 매수 가이드")
                 b1, b2 = st.columns([1, 2])
                 with b1:
                     boxx_qty = (init_seed * 0.5) // float(boxx_price)
                     st.warning(f"**BOXX 매수 수량: `{int(boxx_qty)} 주`**")
-                    st.write(f"(어제 종가기준: `${float(boxx_price):.2f}`)")
+                    st.write(f"(최근 종가기준: `${float(boxx_price):.2f}`)")
                 with b2:
                     st.info("""> **꼭 읽어주세요!**
 > 1. 시작할 때 시드의 절반으로 **BOXX를 매수**합니다. 
-> 2. BOXX는 LOC가 아닌 **'지금 당장 살 수 있는 가격(시장가/지정가)'**으로 사시면 됩니다. 
+> 2. BOXX는 LOC가 아닌 **'지금 당장 살 수 있는 가격(시장가)'**으로 사시면 됩니다. 
 > 3. BOXX는 변동성이 매우 적으므로 아무 때나 사셔도 거의 타격이 없습니다. 
 > 4. BOXX는 1년에 한 번씩, 그 해 처음으로 보유 중인 SOXL이 없는 날에만 리밸런싱을 위해 매매합니다.""")
                 st.divider()
@@ -153,7 +160,7 @@ with tab1:
             mode_color = "orange" if is_sun else "blue"
             
             st.subheader(f"현재 기운: :{mode_color}[{mode_name}]")
-            st.caption(f"120일선(${latest['ma120']:.2f}) 기준 {'상승' if is_sun else '하락'} 추세입니다.")
+            st.caption(f"기준일: {raw_df_live.index[-1].date()} | 120일선: ${latest['ma120']:.2f}")
             
             g1, g2 = st.columns(2)
             with g1:
@@ -164,8 +171,10 @@ with tab1:
                     qty = (cur['Cash_B'] * (w[0]/sum(w))) // b_p
                     st.write(f"**가격:** `${b_p}` 이하 | **수량:** `{int(qty)} 주` (1차)")
                 else: 
-                    current_slots = int(res_live['Shares'].diff().ne(0).cumsum().iloc[-1] % 4)
-                    st.write(f"**현재 {current_slots}차 매수 완료.**")
+                    # 슬롯 체크를 위해 누적 매수 횟수 계산
+                    buy_history = res_live['Shares'].diff()
+                    current_slots = int(len(buy_history[buy_history > 0]) % 4)
+                    st.write(f"**현재 {current_slots if current_slots > 0 else 3}차 매수 완료.**")
                     st.write("익절 전까지 추가 매수 조건 대기 중입니다.")
             with g2:
                 st.info("📤 내일의 매도 타점 (LOC)")
@@ -180,8 +189,7 @@ with tab1:
 with tab2:
     st.header("📊 백테스트 리포트 (Backtest)")
     bt1, bt2 = st.columns(2)
-    min_date = date(2013, 1, 1)
-    max_date = date(2030, 12, 31)
+    min_date, max_date = date(2013, 1, 1), date(2030, 12, 31)
     
     bt_start = bt1.date_input("분석 시작일 선택", value=date(2013, 1, 1), min_value=min_date, max_value=max_date)
     bt_end = bt2.date_input("분석 종료일 선택", value=date.today(), min_value=min_date, max_value=max_date)
@@ -191,9 +199,8 @@ with tab2:
         if raw_df_bt is not None:
             res_bt = run_simulation(raw_df_bt, init_seed, bt_start, bt_end)
             if not res_bt.empty:
-                f_val = res_bt['Total'].iloc[-1]
-                days = (res_bt.index[-1] - res_bt.index[0]).days
-                cagr = ((f_val / init_seed) ** (365.25 / days) - 1) * 100
+                f_val, days = res_bt['Total'].iloc[-1], (res_bt.index[-1] - res_bt.index[0]).days
+                cagr = ((f_val / init_seed) ** (365.25 / max(days, 1)) - 1) * 100
                 peak = res_bt['Total'].cummax()
                 mdd = ((res_bt['Total'] - peak) / peak).min() * 100
                 calmar = cagr / abs(mdd) if mdd != 0 else 0
