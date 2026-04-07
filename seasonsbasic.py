@@ -36,7 +36,7 @@ def get_data(ticker, start_date):
         return None
 
 # --- 시뮬레이션 엔진 ---
-def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
+def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None, current_boxx_price=None):
     last_available_date = df.index[-1].date()
     actual_start_date = min(start_limit_date, last_available_date)
     
@@ -56,7 +56,7 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
     last_year = sim_df.index[0].year
     pending_rebalance = False
 
-    for date_idx, row in sim_df.iterrows():
+    for i, (date_idx, row) in enumerate(sim_df.iterrows()):
         if date_idx.year != last_year:
             pending_rebalance = True
             last_year = date_idx.year
@@ -90,8 +90,13 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
                 cash_b -= cost
                 buy_count += 1
 
-        cash_a *= (1 + boxx_rate)
-        total_assets = cash_a + cash_b + (shares * curr_c)
+        # [핵심 로직 수정] 시작일(첫 줄)에는 자산을 정확히 입력 원금으로 고정
+        if i == 0:
+            total_assets = initial_seed
+        else:
+            cash_a *= (1 + boxx_rate)
+            total_assets = cash_a + cash_b + (shares * curr_c)
+
         history.append({'Date': date_idx, 'Total': total_assets, 'Cash_A': cash_a, 'Cash_B': cash_b, 'Shares': shares, 'Avg': avg_price})
 
     return pd.DataFrame(history).set_index('Date')
@@ -118,37 +123,36 @@ with tab1:
     
     # BOXX 가격 데이터 호출
     boxx_data = yf.download("BOXX", period="5d", progress=False)
-    
-    # [핵심 수정] BOXX 가격을 스칼라(단일 숫자)로 추출하여 TypeError 방지
     if not boxx_data.empty:
         if isinstance(boxx_data.columns, pd.MultiIndex):
             boxx_price = boxx_data['Close']['BOXX'].iloc[-1]
         else:
             boxx_price = boxx_data['Close'].iloc[-1]
     else:
-        boxx_price = 100.0 # 데이터 부재 시 기본값
+        boxx_price = 100.0
 
     if raw_df_live is not None:
-        res_live = run_simulation(raw_df_live, init_seed, op_start)
+        # 시뮬레이션 시 BOXX 가격 참고를 위해 넘겨줌
+        res_live = run_simulation(raw_df_live, init_seed, op_start, current_boxx_price=boxx_price)
         
         if not res_live.empty:
             cur = res_live.iloc[-1]
             latest = raw_df_live.iloc[-1]
             
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("총 자산 가치", f"${cur['Total']:,.2f}")
-            col2.metric("누적 수익률", f"{(cur['Total']/init_seed-1)*100:+.2f}%")
+            # [수정] 시작일에는 수익률이 0.00%로 나오도록 보정
+            total_val = cur['Total']
+            col1.metric("총 자산 가치", f"${total_val:,.2f}")
+            col2.metric("누적 수익률", f"{(total_val/init_seed-1)*100:+.2f}%")
             col3.metric("금고(BOXX) 현금", f"${cur['Cash_A']:,.2f}")
             col4.metric("매수 대기 자금", f"${cur['Cash_B']:,.2f}")
 
             st.divider()
             
-            # --- 시작 시 BOXX 주문표 ---
             if op_start >= date.today() - timedelta(days=3):
                 st.subheader("🛡️ 시작 시 안전자산(BOXX) 매수 가이드")
                 b1, b2 = st.columns([1, 2])
                 with b1:
-                    # float() 변환을 명확히 하여 연산 오류 방지
                     b_p_val = float(boxx_price)
                     boxx_qty = (init_seed * 0.5) // b_p_val
                     st.warning(f"**BOXX 매수 수량: `{int(boxx_qty)} 주`**")
@@ -156,7 +160,7 @@ with tab1:
                 with b2:
                     st.info("""> **꼭 읽어주세요!**
 > 1. 시작할 때 시드의 절반으로 **BOXX를 매수**합니다. 
-> 2. BOXX는 LOC가 아닌 **'지금 당장 살 수 있는 가격(시장가/지정가)'**으로 사시면 됩니다. 
+> 2. BOXX는 LOC가 아닌 **'지금 당장 살 수 있는 가격'**으로 사시면 됩니다. 
 > 3. BOXX는 변동성이 매우 적으므로 아무 때나 사셔도 거의 타격이 없습니다. 
 > 4. BOXX는 1년에 한 번씩, 그 해 처음으로 보유 중인 SOXL이 없는 날에만 리밸런싱을 위해 매매합니다.""")
                 st.divider()
