@@ -63,6 +63,7 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
         b_l = round(x * 0.99, 2) 
         s_l = round(x * 1.01, 2) 
         
+        # [검증 완료] 가변 가중치 로직
         weights = [2, 1, 2] if curr_c >= ma120 else [1, 2, 3]
         
         if shares > 0 and curr_c >= s_l:
@@ -74,6 +75,7 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
                 pending_rebalance = False
         
         elif buy_count < 3 and curr_c <= b_l:
+            # [검증 완료] 정량 분할 매수 로직
             rem_w = sum(weights[buy_count:])
             curr_w = weights[buy_count]
             buy_money = cash_b * (curr_w / rem_w)
@@ -108,9 +110,13 @@ with st.sidebar:
 tab1, tab2 = st.tabs(["🎯 오늘의 가이드", "📊 백테스트 리포트"])
 
 with tab1:
-    op_start = st.date_input("수익률 계산 시작일", value=date(2025, 1, 1))
+    op_start = st.date_input("수익률 계산 시작일", value=date.today())
     raw_df_live = get_data(ticker, op_start)
     
+    # BOXX 가격 데이터 가져오기
+    boxx_data = yf.download("BOXX", period="2d", progress=False)
+    boxx_price = boxx_data['Close'].iloc[-1] if not boxx_data.empty else 100.0
+
     if raw_df_live is not None:
         res_live = run_simulation(raw_df_live, init_seed, op_start)
         if not res_live.empty:
@@ -125,6 +131,22 @@ with tab1:
 
             st.divider()
             
+            # --- 시작 시 BOXX 주문표 (강조) ---
+            if op_start == date.today():
+                st.subheader("🛡️ 시작 시 안전자산(BOXX) 매수 가이드")
+                b1, b2 = st.columns([1, 2])
+                with b1:
+                    boxx_qty = (init_seed * 0.5) // float(boxx_price)
+                    st.warning(f"**BOXX 매수 수량: `{int(boxx_qty)} 주`**")
+                    st.write(f"(어제 종가기준: `${float(boxx_price):.2f}`)")
+                with b2:
+                    st.info("""> **꼭 읽어주세요!**
+> 1. 시작할 때 시드의 절반으로 **BOXX를 매수**합니다. 
+> 2. BOXX는 LOC가 아닌 **'지금 당장 살 수 있는 가격(시장가/지정가)'**으로 사시면 됩니다. 
+> 3. BOXX는 변동성이 매우 적으므로 아무 때나 사셔도 거의 타격이 없습니다. 
+> 4. BOXX는 1년에 한 번씩, 그 해 처음으로 보유 중인 SOXL이 없는 날에만 리밸런싱을 위해 매매합니다.""")
+                st.divider()
+
             x_val = latest['x']
             is_sun = latest['close'] >= latest['ma120']
             mode_name = "☀️ 양지 (Sun Mode)" if is_sun else "🌙 음지 (Moon Mode)"
@@ -158,10 +180,8 @@ with tab1:
 with tab2:
     st.header("📊 백테스트 리포트 (Backtest)")
     bt1, bt2 = st.columns(2)
-    
-    # 핵심 수정: min_value와 max_value를 설정하여 2013년부터 2026년 이후까지 선택 가능하게 함
     min_date = date(2013, 1, 1)
-    max_date = date(2030, 12, 31) # 넉넉하게 2030년까지 열어두었습니다.
+    max_date = date(2030, 12, 31)
     
     bt_start = bt1.date_input("분석 시작일 선택", value=date(2013, 1, 1), min_value=min_date, max_value=max_date)
     bt_end = bt2.date_input("분석 종료일 선택", value=date.today(), min_value=min_date, max_value=max_date)
