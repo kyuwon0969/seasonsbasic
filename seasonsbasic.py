@@ -51,7 +51,7 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
     
     last_year = sim_df.index[0].year
     pending_rebalance = False
-    rebalanced_today = False # 오늘 리밸런싱이 일어났는지 체크
+    rebalanced_today = False 
 
     for i, (date_idx, row) in enumerate(sim_df.iterrows()):
         rebalanced_today = False
@@ -66,7 +66,6 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
         s_l = round(x * 1.01, 2) 
         weights = [2, 1, 2] if curr_c >= ma120 else [1, 2, 3]
         
-        # 1. 매도 및 리밸런싱
         if shares > 0 and curr_c >= s_l:
             cash_b += shares * curr_c
             shares, buy_count, avg_price = 0, 0, 0.0
@@ -74,9 +73,8 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
                 total = cash_a + cash_b
                 cash_a, cash_b = total * 0.5, total * 0.5
                 pending_rebalance = False
-                rebalanced_today = True # 리밸런싱 발생!
+                rebalanced_today = True 
         
-        # 2. 매수
         elif buy_count < 3 and curr_c <= b_l:
             rem_w = sum(weights[buy_count:])
             curr_w = weights[buy_count]
@@ -98,7 +96,7 @@ def run_simulation(df, initial_seed, start_limit_date, end_limit_date=None):
         history.append({
             'Date': date_idx, 'Total': total_assets, 'Cash_A': cash_a, 
             'Cash_B': cash_b, 'Shares': shares, 'Avg': avg_price,
-            'Rebalanced': rebalanced_today # 기록에 남김
+            'Rebalanced': rebalanced_today 
         })
 
     return pd.DataFrame(history).set_index('Date'), rebalanced_today
@@ -120,10 +118,17 @@ tab1, tab2 = st.tabs(["🎯 오늘의 가이드", "📊 백테스트 리포트"]
 with tab1:
     op_start = st.date_input("운용 시작일 (주문 가이드 기준)", value=date.today())
     raw_df_live = get_data(ticker, op_start)
+    
+    # [에러 방지 핵심] BOXX 가격 로직 강화
     boxx_data = yf.download("BOXX", period="5d", progress=False)
+    boxx_price = 100.0 # 기본값
     if not boxx_data.empty:
-        boxx_price = boxx_data['Close']['BOXX'].iloc[-1] if isinstance(boxx_data.columns, pd.MultiIndex) else boxx_data['Close'].iloc[-1]
-    else: boxx_price = 100.0
+        # 멀티인덱스 여부 확인 후 마지막 유효 데이터(ffill) 추출
+        temp_close = boxx_data['Close']
+        if isinstance(temp_close, pd.DataFrame):
+            boxx_price = temp_close.iloc[:, 0].ffill().iloc[-1]
+        else:
+            boxx_price = temp_close.ffill().iloc[-1]
 
     if raw_df_live is not None:
         res_live, is_reb = run_simulation(raw_df_live, init_seed, op_start)
@@ -138,7 +143,7 @@ with tab1:
             col4.metric("매수 대기 자금", f"${cur['Cash_B']:,.2f}")
             st.divider()
             
-            # --- 상황별 BOXX 주문표 (시작 또는 리밸런싱) ---
+            # --- 상황별 BOXX 주문표 ---
             if op_start >= date.today() - timedelta(days=3) or is_reb:
                 title = "🛡️ 안전자산(BOXX) 매매 가이드"
                 if is_reb: title = "🔄 연간 리밸런싱: BOXX 매매 가이드"
@@ -146,10 +151,13 @@ with tab1:
                 st.subheader(title)
                 b1, b2 = st.columns([1, 2])
                 with b1:
-                    # 현재 금고(Cash_A)에 맞춰서 내가 가져야 할 BOXX 주수 계산
-                    target_boxx_qty = cur['Cash_A'] // float(boxx_price)
-                    st.warning(f"**현재 보유해야 할 BOXX: `{int(target_boxx_qty)} 주`**")
-                    st.write(f"(최근 종가기준: `${float(boxx_price):.2f}`)")
+                    # [에러 방지] 값이 유효한지 확인 후 정수 변환
+                    try:
+                        target_boxx_qty = float(cur['Cash_A']) // float(boxx_price)
+                        st.warning(f"**현재 보유해야 할 BOXX: `{int(target_boxx_qty)} 주`**")
+                        st.write(f"(최근 종가기준: `${float(boxx_price):.2f}`)")
+                    except:
+                        st.warning("**BOXX 수량 계산 중... (장 열린 후 확인 가능)**")
                 with b2:
                     if is_reb:
                         st.success("🎉 **연간 정산일입니다!** 지난 1년간의 수익을 반영하여 금고를 다시 5:5로 채웁니다. 위 수량에 맞춰 BOXX를 추가 매수하거나 일부 매도하여 비중을 맞추세요.")
@@ -157,7 +165,7 @@ with tab1:
                         st.info("""> **시작 가이드**
 > 1. 시작할 때 시드의 절반으로 **BOXX를 매수**합니다. 
 > 2. BOXX는 LOC가 아닌 **'지금 당장 살 수 있는 가격'**으로 사시면 됩니다. 
-> 3. BOXX는 1년에 한 번씩, 그 해 처음으로 보유 중인 SOXL이 없는 날에만 리밸런싱을 위해 매매합니다.""")
+> 3. BOXX는 변동성이 매우 적으므로 아무 때나 사셔도 거의 타격이 없습니다.""")
                 st.divider()
 
             # --- Sun/Moon 가이드 ---
@@ -203,23 +211,11 @@ with tab2:
                 f_val, days = res_bt['Total'].iloc[-1], (res_bt.index[-1] - res_bt.index[0]).days
                 cagr = ((f_val / init_seed) ** (365.25 / max(days, 1)) - 1) * 100
                 peak = res_bt['Total'].cummax()
-                
-                # 1. MDD (전고점 대비 최대 낙폭)
                 mdd = ((res_bt['Total'] - peak) / peak).min() * 100
-                
-                # 2. 원금 대비 최대 손실률 (Max Loss from Principal) 추가
-                # 전체 기간 중 최저 자산이 원금보다 낮을 때의 비율 계산
-                max_loss_principal = min((res_bt['Total'].min() - init_seed) / init_seed * 100, 0.0)
-                
                 calmar = cagr / abs(mdd) if mdd != 0 else 0
-                
-                # 컬럼을 5개로 확장하여 지표 출력
-                k1, k2, k3, k4, k5 = st.columns(5)
-                k1.metric("최종 결과", f"${f_val:,.0f}")
-                k2.metric("CAGR (연복리)", f"{cagr:.2f}%")
-                k3.metric("MDD (고점대비)", f"{mdd:.2f}%")
-                k4.metric("원금대비 최대손실", f"{max_loss_principal:.2f}%")
-                k5.metric("Calmar (수익 효율)", f"{calmar:.2f}")
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("최종 결과", f"${f_val:,.0f}"); k2.metric("CAGR (연복리)", f"{cagr:.2f}%")
+                k3.metric("MDD (최대낙폭)", f"{mdd:.2f}%"); k4.metric("Calmar (수익 효율)", f"{calmar:.2f}")
                 
                 st.subheader("📅 연도별 성과 통계")
                 res_bt['Year'] = res_bt.index.year
